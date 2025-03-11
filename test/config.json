@@ -1,0 +1,7 @@
+{
+    "model_name": "base",
+    "device": "auto",
+    "compute_type": "float32",
+    "cpu_threads": 4,
+    "num_workers": 2
+} 

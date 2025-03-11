@@ -1,0 +1,73 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    sidecar.istio.io/inject: "false"
+  name: kube-whisperer
+  namespace: default
+spec:
+  predictor:
+    imagePullSecrets:
+      - name: ${REGISTRY_SECRET_NAME}
+    containers:
+    - env:
+      - name: WHISPER_MODEL
+        value: base
+      - name: COMPUTE_TYPE
+        value: float16
+      - name: CPU_THREADS
+        value: "4"
+      - name: NUM_WORKERS
+        value: "2"
+      - name: MAX_FILE_SIZE
+        value: "26214400"
+      image: ${REGISTRY_IMAGE}
+      livenessProbe:
+        failureThreshold: 3
+        httpGet:
+          path: /health
+          port: http1
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        successThreshold: 1
+        timeoutSeconds: 10
+      name: kserve-container
+      ports:
+      - containerPort: 8000
+        name: http1
+        protocol: TCP
+      readinessProbe:
+        failureThreshold: 3
+        httpGet:
+          path: /health
+          port: http1
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        successThreshold: 1
+        timeoutSeconds: 5
+      resources:
+        limits:
+          cpu: "4"
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: "1"
+          memory: 4Gi
+          nvidia.com/gpu: "1"
+      startupProbe:
+        failureThreshold: 12
+        httpGet:
+          path: /health
+          port: http1
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        successThreshold: 1
+        timeoutSeconds: 30
+      volumeMounts:
+      - mountPath: /tmp
+        name: temp
+    volumes:
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 1Gi
+      name: temp
