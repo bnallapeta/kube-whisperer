@@ -3,6 +3,9 @@ kind: InferenceService
 metadata:
   annotations:
     sidecar.istio.io/inject: "false"
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8000"
   name: kube-whisperer
   namespace: default
 spec:
@@ -21,30 +24,41 @@ spec:
         value: "2"
       - name: MAX_FILE_SIZE
         value: "26214400"
+      - name: ENVIRONMENT
+        value: "production"
       image: ${REGISTRY_IMAGE}
       livenessProbe:
-        failureThreshold: 3
         httpGet:
-          path: /health
+          path: /live
           port: http1
-        initialDelaySeconds: 60
+        initialDelaySeconds: 30
         periodSeconds: 30
-        successThreshold: 1
         timeoutSeconds: 10
-      name: kserve-container
-      ports:
-      - containerPort: 8000
-        name: http1
-        protocol: TCP
-      readinessProbe:
         failureThreshold: 3
+        successThreshold: 1
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: http1
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+        successThreshold: 1
+      startupProbe:
         httpGet:
           path: /health
           port: http1
         initialDelaySeconds: 30
         periodSeconds: 10
+        timeoutSeconds: 30
+        failureThreshold: 12
         successThreshold: 1
-        timeoutSeconds: 5
+      name: kserve-container
+      ports:
+      - containerPort: 8000
+        name: http1
+        protocol: TCP
       resources:
         limits:
           cpu: "4"
@@ -54,20 +68,25 @@ spec:
           cpu: "1"
           memory: 4Gi
           nvidia.com/gpu: "1"
-      startupProbe:
-        failureThreshold: 12
-        httpGet:
-          path: /health
-          port: http1
-        initialDelaySeconds: 30
-        periodSeconds: 10
-        successThreshold: 1
-        timeoutSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
       volumeMounts:
       - mountPath: /tmp
         name: temp
+      - mountPath: /tmp/whisper_audio
+        name: whisper-data
     volumes:
     - emptyDir:
         medium: Memory
         sizeLimit: 1Gi
       name: temp
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+      name: whisper-data

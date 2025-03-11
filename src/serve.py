@@ -19,6 +19,9 @@ import time
 from pydantic import BaseModel, Field, ConfigDict
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from tenacity import retry, stop_after_attempt, wait_exponential
+from prometheus_fastapi_instrumentator import Instrumentator
+from datetime import datetime, timedelta
 
 # Configure structured logging
 structlog.configure(
@@ -36,7 +39,7 @@ TEMP_DIR = "/tmp/whisper_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 logger.info(f"Using temp directory: {TEMP_DIR}")
 
-# Prometheus metrics
+# Initialize Prometheus metrics and instrumentation
 REQUESTS = Counter("whisper_requests_total", "Total requests processed")
 ERRORS = Counter("whisper_errors_total", "Total errors encountered", ["type"])
 PROCESSING_TIME = Histogram("whisper_processing_seconds", "Time spent processing requests")
@@ -86,11 +89,15 @@ def update_metrics():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for the FastAPI application."""
-    global model, config, executor
+    global model, config, executor, health_checker
     try:
         logger.info("loading_model", config=config.model_dump())
         model = load_model(config)
         logger.info("model_loaded_successfully")
+        
+        # Initialize health checker with loaded model
+        health_checker = HealthStatus(model, config)
+        logger.info("health_checker_initialized")
         
         if config.device in ["cpu", "auto"] and not torch.cuda.is_available():
             torch.set_num_threads(config.cpu_threads)
@@ -110,12 +117,17 @@ async def lifespan(app: FastAPI):
         executor.shutdown(wait=True)
         logger.info("executor_shutdown")
 
+# Create FastAPI app
 app = FastAPI(
     title="Whisper Transcription Service",
     description="Speech-to-text service using OpenAI's Whisper model",
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Set up Prometheus instrumentation before any middleware
+instrumentator = Instrumentator()
+instrumentator.instrument(app).expose(app)
 
 # Add Prometheus metrics endpoint
 metrics_app = make_asgi_app()
@@ -155,35 +167,170 @@ def load_model(model_config: ModelConfig) -> whisper.Whisper:
                     config=model_config.model_dump())
         raise
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint with detailed system information."""
-    try:
-        update_metrics()
-        gpu_info = {
-            "available": torch.cuda.is_available(),
-            "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
-            "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-            "memory_allocated": torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        }
+class HealthStatus:
+    """Health status checker for the service."""
+    
+    def __init__(self, model, config):
+        self.model = model
+        self.config = config
+        self.logger = logger
+        self._last_check = None
+        self._cache_duration = timedelta(seconds=30)
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def check_model_health(self) -> Dict:
+        """Check if the model is responsive."""
+        try:
+            # Simple inference test
+            if self.model is None:
+                raise RuntimeError("Model not initialized")
+            
+            device = next(self.model.parameters()).device
+            return {
+                "status": "healthy",
+                "device": str(device),
+                "model_name": self.config.whisper_model,
+                "compute_type": self.config.compute_type
+            }
+        except Exception as e:
+            self.logger.error("model_health_check_failed", error=str(e))
+            return {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+
+    async def check_gpu_health(self) -> Dict:
+        """Check GPU health if available."""
+        try:
+            if not torch.cuda.is_available():
+                return {"status": "not_available"}
+            
+            return {
+                "status": "healthy",
+                "device_count": torch.cuda.device_count(),
+                "device_name": torch.cuda.get_device_name(0),
+                "memory_allocated": torch.cuda.memory_allocated(),
+                "memory_reserved": torch.cuda.memory_reserved()
+            }
+        except Exception as e:
+            self.logger.error("gpu_health_check_failed", error=str(e))
+            return {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+
+    async def check_system_health(self) -> Dict:
+        """Check system resources."""
+        try:
+            process = psutil.Process()
+            memory_info = process.memory_info()
+            
+            return {
+                "status": "healthy",
+                "cpu_percent": process.cpu_percent(),
+                "memory_percent": process.memory_percent(),
+                "memory_rss": memory_info.rss,
+                "memory_vms": memory_info.vms,
+                "thread_count": process.num_threads(),
+                "open_files": len(process.open_files())
+            }
+        except Exception as e:
+            self.logger.error("system_health_check_failed", error=str(e))
+            return {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+
+    async def check_temp_directory(self) -> Dict:
+        """Check temporary directory status."""
+        try:
+            temp_dir = TEMP_DIR
+            if not os.path.exists(temp_dir):
+                os.makedirs(temp_dir)
+            
+            # Get directory stats
+            total_files = 0
+            total_size = 0
+            for _, _, files in os.walk(temp_dir):
+                total_files += len(files)
+                total_size += sum(os.path.getsize(os.path.join(temp_dir, f)) for f in files)
+            
+            return {
+                "status": "healthy",
+                "path": temp_dir,
+                "total_files": total_files,
+                "total_size_mb": total_size / (1024 * 1024)
+            }
+        except Exception as e:
+            self.logger.error("temp_directory_check_failed", error=str(e))
+            return {
+                "status": "unhealthy",
+                "error": str(e)
+            }
+
+    async def get_full_health_status(self) -> Dict:
+        """Get comprehensive health status."""
+        model_health = await self.check_model_health()
+        gpu_health = await self.check_gpu_health()
+        system_health = await self.check_system_health()
+        temp_dir_health = await self.check_temp_directory()
         
-        process = psutil.Process()
-        system_info = {
-            "cpu_percent": process.cpu_percent(),
-            "memory_percent": process.memory_percent(),
-            "memory_info": dict(process.memory_info()._asdict())
-        }
+        status = "healthy"
+        if any(check.get("status") == "unhealthy" 
+               for check in [model_health, gpu_health, system_health, temp_dir_health]):
+            status = "unhealthy"
         
         return {
-            "status": "healthy",
-            "config": config.model_dump(),
-            "gpu": gpu_info,
-            "system": system_info,
-            "model_loaded": model is not None
+            "status": status,
+            "timestamp": datetime.utcnow().isoformat(),
+            "model": model_health,
+            "gpu": gpu_health,
+            "system": system_health,
+            "temp_directory": temp_dir_health,
+            "config": self.config.model_dump()
         }
+
+# Initialize health checker
+health_checker = None
+
+@app.get("/health")
+async def health_check():
+    """Enhanced health check endpoint."""
+    try:
+        if health_checker is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Health checker not initialized"
+            )
+        health_status = await health_checker.get_full_health_status()
+        if health_status["status"] == "unhealthy":
+            raise HTTPException(status_code=503, detail=health_status)
+        return health_status
     except Exception as e:
         logger.error("health_check_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness probe endpoint."""
+    try:
+        if health_checker is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Health checker not initialized"
+            )
+        model_health = await health_checker.check_model_health()
+        if model_health["status"] == "unhealthy":
+            raise HTTPException(status_code=503, detail=model_health)
+        return {"status": "ready", "model_health": model_health}
+    except Exception as e:
+        logger.error("readiness_check_failed", error=str(e))
+        raise HTTPException(status_code=503, detail=str(e))
+
+@app.get("/live")
+async def liveness_check():
+    """Liveness probe endpoint."""
+    return {"status": "alive", "timestamp": datetime.utcnow().isoformat()}
 
 @app.post("/config")
 async def update_config(new_config: ModelConfig):
