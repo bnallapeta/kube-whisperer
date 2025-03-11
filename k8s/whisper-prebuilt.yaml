@@ -1,0 +1,43 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    sidecar.istio.io/inject: "false"
+  name: whisper-service
+  namespace: default
+spec:
+  predictor:
+    containers:
+    - env:
+      # Model configuration
+      - name: WHISPER_MODEL
+        value: base  # Options: tiny, base, small, medium, large
+      - name: DEVICE
+        value: cuda  # Options: cpu, cuda, mps
+      - name: COMPUTE_TYPE
+        value: float16  # Options: int8, float16, float32
+      - name: CPU_THREADS
+        value: "4"  # Number of CPU threads to use
+      - name: NUM_WORKERS
+        value: "2"  # Number of worker processes
+      
+      # Service configuration
+      - name: LOG_LEVEL
+        value: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+      - name: TEMP_DIR
+        value: "/tmp/whisper_audio"
+      - name: MODEL_DOWNLOAD_ROOT
+        value: "/tmp/whisper_models"
+      - name: MAX_FILE_SIZE
+        value: "26214400"  # Max file size in bytes (25MB)
+      
+      image: ghcr.io/bnallapeta/kube-whisperer:0.0.1
+      resources:
+        limits:
+          cpu: "4"
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: "1"
+          memory: 4Gi
+          nvidia.com/gpu: "1"

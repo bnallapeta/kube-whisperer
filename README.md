@@ -1,6 +1,56 @@
-# Whisper Speech-to-Text Service with KServe
+# kube-whisperer: Speech-to-Text Service with KServe
 
 A speech-to-text service using OpenAI's Whisper model, deployed on Kubernetes with KServe and GPU acceleration.
+
+## Quick Start
+
+The easiest way to deploy the service is using our pre-built Docker image:
+
+```bash
+# Apply the InferenceService using the pre-built image (GPU version)
+kubectl apply -f https://raw.githubusercontent.com/bnallapeta/kube-whisperer/main/k8s/whisper-prebuilt.yaml
+
+# Or for CPU-only deployment
+kubectl apply -f https://raw.githubusercontent.com/bnallapeta/kube-whisperer/main/k8s/whisper-prebuilt-cpu.yaml
+```
+
+Or create your own YAML file:
+
+```yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: whisper-service
+  namespace: default
+spec:
+  predictor:
+    containers:
+    - image: ghcr.io/bnallapeta/kube-whisperer:0.0.1
+      env:
+      - name: WHISPER_MODEL
+        value: "base"  # Options: tiny, base, small, medium, large
+      - name: DEVICE
+        value: "cuda"  # Use "cpu" for CPU-only deployment
+      resources:
+        limits:
+          cpu: "4"
+          memory: 8Gi
+          nvidia.com/gpu: "1"  # Remove for CPU-only deployment
+        requests:
+          cpu: "1"
+          memory: 4Gi
+          nvidia.com/gpu: "1"  # Remove for CPU-only deployment
+```
+
+Once deployed, you can use the service:
+
+```bash
+# Test transcription
+curl -X POST http://whisper-service.default.svc.cluster.local/transcribe \
+  -F "file=@your-audio-file.wav"
+```
+
+For more detailed configuration and deployment options, see the [Configuration Options](#configuration-options) and [Deployment](#deployment) sections.
 
 ## Features
 
