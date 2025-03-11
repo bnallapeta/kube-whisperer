@@ -16,7 +16,9 @@ request_id_context: ContextVar[str] = ContextVar('request_id', default='')
 correlation_id_context: ContextVar[str] = ContextVar('correlation_id', default='')
 session_id_context: ContextVar[str] = ContextVar('session_id', default='')
 
-def set_context(request_id: Optional[str] = None, correlation_id: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, str]:
+def set_context(request_id: Optional[str] = None, correlation_id: Optional[str] = None, 
+              session_id: Optional[str] = None, environment: Optional[str] = None, 
+              service: Optional[str] = None) -> Dict[str, str]:
     """Set context variables for request tracking."""
     context = {}
     
@@ -35,6 +37,12 @@ def set_context(request_id: Optional[str] = None, correlation_id: Optional[str] 
     if session_id:
         session_id_context.set(session_id)
         context['session_id'] = session_id
+        
+    if environment:
+        context['environment'] = environment
+        
+    if service:
+        context['service'] = service
     
     return context
 
@@ -77,22 +85,29 @@ def format_exc_info(logger: Any, method_name: str, event_dict: Dict) -> Dict:
     return event_dict
 
 def setup_logging(log_level: str = "INFO", json_output: bool = True) -> None:
-    """Setup structured logging with enhanced processors."""
-    # Set up standard logging
-    logging.basicConfig(
-        format="%(message)s",
-        stream=sys.stdout,
-        level=log_level,
-    )
+    """Configure logging with structlog.
+    
+    Args:
+        log_level: The log level to use (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        json_output: Whether to output logs in JSON format
+    """
+    # Set environment variables
+    os.environ.setdefault("ENVIRONMENT", "development")
+    os.environ.setdefault("REQUEST_ID", "")
+    os.environ.setdefault("CORRELATION_ID", "")
+    os.environ.setdefault("SESSION_ID", "")
 
+    # Convert string log level to numeric value
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    logging.basicConfig(level=numeric_level)
+
+    # Configure processors
     processors = [
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.add_logger_name,
-        add_timestamp,
-        add_context_to_event,
-        add_service_info,
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
-        format_exc_info,
+        structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
     ]
 
@@ -109,45 +124,50 @@ def setup_logging(log_level: str = "INFO", json_output: bool = True) -> None:
         cache_logger_on_first_use=True,
     )
 
-def get_logger(name: str = __name__) -> structlog.BoundLogger:
-    """Get a logger instance with the given name."""
-    return structlog.get_logger(name)
+def get_logger(name: str) -> structlog.BoundLogger:
+    """Get a logger instance with the given name.
+    
+    Args:
+        name: The name of the logger
+        
+    Returns:
+        A configured logger instance
+    """
+    logger = structlog.get_logger(name)
+    logger = logger.bind(
+        environment=os.getenv("ENVIRONMENT", "development"),
+        request_id=os.getenv("REQUEST_ID", ""),
+        correlation_id=os.getenv("CORRELATION_ID", ""),
+        session_id=os.getenv("SESSION_ID", "")
+    )
+    return logger
 
 # Error tracking
 class ErrorTracker:
-    def __init__(self):
-        self.logger = get_logger('error_tracker')
-        self.error_counts = defaultdict(int)
-        self.last_errors = defaultdict(list)
-        self.max_stored_errors = 100
+    """Track and log errors with a maximum count."""
+    
+    def __init__(self, max_errors: int = 100):
+        self.max_errors = max_errors
+        self.error_counts = {}
+        self.logger = get_logger("error_tracker")
 
-    def track_error(self, error: Exception, context: Optional[Dict] = None):
-        """Track an error with optional context."""
+    def track_error(self, error: Exception, context: Optional[dict] = None) -> None:
+        """Track an error occurrence."""
         error_type = type(error).__name__
+        if error_type not in self.error_counts:
+            self.error_counts[error_type] = 0
         self.error_counts[error_type] += 1
         
-        error_info = {
-            'type': error_type,
-            'message': str(error),
-            'timestamp': datetime.utcnow().isoformat(),
-            'context': context or {}
-        }
-        
-        self.last_errors[error_type].append(error_info)
-        if len(self.last_errors[error_type]) > self.max_stored_errors:
-            self.last_errors[error_type].pop(0)
-        
-        self.logger.error('error_tracked',
-                         error_type=error_type,
-                         error_count=self.error_counts[error_type],
-                         error_info=error_info)
+        if self.error_counts[error_type] <= self.max_errors:
+            error_info = {
+                "type": error_type,
+                "message": str(error),
+                "timestamp": datetime.utcnow().isoformat(),
+                "context": context or {}
+            }
+            self.logger.error("error_tracked", 
+                            error_type=error_type,
+                            error_count=self.error_counts[error_type],
+                            error_info=error_info)
 
-    def get_error_stats(self) -> Dict:
-        """Get error statistics."""
-        return {
-            'counts': dict(self.error_counts),
-            'recent_errors': {k: v[-5:] for k, v in self.last_errors.items()}
-        }
-
-# Initialize global error tracker
-error_tracker = ErrorTracker() 
+error_tracker = ErrorTracker()

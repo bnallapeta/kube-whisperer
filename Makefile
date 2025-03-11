@@ -3,7 +3,8 @@
         cluster-deploy cluster-test registry-start registry-stop dev-build \
         dev-push local-deploy cloud-deploy setup-local run-local test-local \
         debug-deps debug-container clean-local create-secret show-config venv \
-        cache-clean acr-login acr-build acr-push acr-clean acr-rebuild check-env
+        cache-clean acr-login acr-build acr-push acr-clean acr-rebuild check-env \
+        clean-artifacts
 
 # Core variables
 REGISTRY_TYPE ?= acr
@@ -159,9 +160,8 @@ cluster-test:
 	$(PYTHON) test/test_transcription.py --url http://localhost:8000 --audio $(AUDIO) $(ARGS)
 
 # Cleanup commands
-clean: clean-local
-	find . -type f -name "temp_audio_*" -delete
-	-$(CONTAINER_RUNTIME) rmi $(REGISTRY_IMAGE) $(LOCAL_IMAGE_NAME) 2>/dev/null || true
+clean: clean-artifacts clean-local
+	@echo "Clean complete!"
 
 clean-local:
 	rm -rf $(VENV)
@@ -316,4 +316,13 @@ help:
 	@echo "  CONTAINER_RUNTIME - Container runtime to use (default: auto-detected podman or docker)"
 	@echo "  LOCAL_REGISTRY    - Local registry address (default: localhost:5000)"
 	@echo "  IMAGE_NAME       - Image name (default: whisper-service)"
-	@echo "  TAG             - Image tag (default: latest)" 
+	@echo "  TAG             - Image tag (default: latest)"
+
+# Clean build artifacts
+clean-artifacts:
+	@echo "Cleaning build artifacts..."
+	@./clean.sh
+
+# Clean all (including Docker images)
+clean: clean-artifacts clean-local
+	@echo "Clean complete!" 
