@@ -153,12 +153,12 @@ test-local: setup-local
 		exit 1; \
 	fi
 	@echo "Testing local service with $(AUDIO)..."
-	. $(VENV)/bin/activate && $(PYTHON) test/test_transcription.py --url http://localhost:8000 --audio $(AUDIO) $(ARGS)
+	. $(VENV)/bin/activate && $(PYTHON) tests/api/test_transcription.py --url http://localhost:8000 --audio $(AUDIO) $(ARGS)
 
 cluster-test:
 	kubectl port-forward svc/kube-whisperer-predictor-default 8000:8000 & \
 	sleep 5 && \
-	$(PYTHON) test/test_transcription.py --url http://localhost:8000 --audio $(AUDIO) $(ARGS)
+	$(PYTHON) tests/api/test_transcription.py --url http://localhost:8000 --audio $(AUDIO) $(ARGS)
 
 # Cleanup commands
 clean: clean-artifacts clean-local
@@ -322,7 +322,7 @@ help:
 # Clean build artifacts
 clean-artifacts:
 	@echo "Cleaning build artifacts..."
-	@./clean.sh
+	@./utils/clean.sh
 
 # Clean all (including Docker images)
 clean: clean-artifacts clean-local
