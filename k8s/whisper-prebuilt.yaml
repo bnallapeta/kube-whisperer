@@ -2,7 +2,7 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   annotations:
-    sidecar.istio.io/inject: "false"
+    sidecar.istio.io/inject: "true"
   name: whisper-service
   namespace: default
 spec:
@@ -34,10 +34,10 @@ spec:
       image: ghcr.io/bnallapeta/kube-whisperer:0.0.1
       resources:
         limits:
-          cpu: "4"
+          cpu: "1"
           memory: 8Gi
           nvidia.com/gpu: "1"
         requests:
           cpu: "1"
-          memory: 4Gi
+          memory: 1Gi
           nvidia.com/gpu: "1"

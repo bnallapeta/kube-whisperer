@@ -153,7 +153,7 @@ class ServiceConfig(BaseSettings):
         description="List of allowed file types"
     )
     temp_dir: str = Field(
-        default=os.path.join(os.path.expanduser("~"), ".whisper", "temp"),
+        default="/tmp/whisper/temp",
         description="Temporary directory for file uploads"
     )
     cleanup_interval_minutes: int = Field(default=60, description="Interval for cleaning up temporary files", gt=0)
@@ -203,7 +203,7 @@ class ServiceConfig(BaseSettings):
                 raise ValueError(f"Temporary directory {self.temp_dir} is not writable")
         except OSError:
             # If we can't create or access the directory, use a fallback
-            self.temp_dir = os.path.join(os.path.expanduser("~"), ".whisper", "temp")
+            self.temp_dir = "/tmp/whisper/temp"
             os.makedirs(self.temp_dir, exist_ok=True)
         return self
 

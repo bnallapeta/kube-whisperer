@@ -16,11 +16,11 @@ REGISTRY_URL ?= $(if $(filter acr,$(REGISTRY_TYPE)),$(REGISTRY_NAME).azurecr.io,
 
 # Image configuration
 IMAGE_NAME ?= whisper-service
-TAG ?= latest
+TAG ?= 0.0.3
 REGISTRY_IMAGE = $(REGISTRY_URL)/$(IMAGE_NAME):$(TAG)
 LOCAL_REGISTRY ?= localhost:5000
 LOCAL_IMAGE_NAME = $(LOCAL_REGISTRY)/$(IMAGE_NAME):$(TAG)
-REGISTRY_SECRET_NAME ?= registry-secret
+REGISTRY_SECRET_NAME ?= acr-secret
 
 # Build configuration
 CONTAINER_RUNTIME ?= $(shell which podman 2>/dev/null || which docker 2>/dev/null)
@@ -33,6 +33,7 @@ PYTHON ?= python3
 VENV ?= venv
 PIP ?= $(VENV)/bin/pip
 KUBECONFIG ?= ${KUBECONFIG}
+PORT ?= 8000
 
 # Create cache directories
 $(shell mkdir -p $(CACHE_DIR)/amd64 $(CACHE_DIR)/arm64)
@@ -109,7 +110,7 @@ acr-build-only:
 			--force-rm=false . || exit 1; \
 	fi
 
-acr-push: acr-login
+acr-push:
 	@if echo $(CONTAINER_RUNTIME) | grep -q "docker"; then \
 		$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE); \
 	else \
@@ -143,7 +144,7 @@ run:
 
 run-local: setup-local
 	@echo "Starting Whisper service locally..."
-	. $(VENV)/bin/activate && $(PYTHON) src/serve.py
+	. $(VENV)/bin/activate && PORT=$(PORT) $(PYTHON) -m src.serve
 
 test-local: setup-local
 	@if [ -z "$(AUDIO)" ]; then \

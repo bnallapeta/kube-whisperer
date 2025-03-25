@@ -23,8 +23,8 @@ from concurrent.futures import ThreadPoolExecutor
 from tenacity import retry, stop_after_attempt, wait_exponential
 from prometheus_fastapi_instrumentator import Instrumentator
 from datetime import datetime, timedelta
-from .config import ModelConfig, ServiceConfig, TranscriptionOptions
-from .logging_setup import get_logger, error_tracker, setup_logging
+from src.config import ModelConfig, ServiceConfig, TranscriptionOptions
+from src.logging_setup import get_logger, error_tracker, setup_logging
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -156,7 +156,15 @@ class BatchRequest(BaseModel):
         return v
 
 # Global variables
-config = ModelConfig()
+# Initialize ModelConfig with environment variables
+config = ModelConfig(
+    whisper_model=os.getenv("WHISPER_MODEL", "base"),
+    device=os.getenv("DEVICE", "cpu"),
+    compute_type=os.getenv("COMPUTE_TYPE", "int8"),
+    cpu_threads=int(os.getenv("CPU_THREADS", "4")),
+    num_workers=int(os.getenv("NUM_WORKERS", "1")),
+    download_root=os.getenv("MODEL_DOWNLOAD_ROOT", "/tmp/whisper_models")
+)
 model = None
 executor = None
 

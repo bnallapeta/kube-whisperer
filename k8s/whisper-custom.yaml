@@ -2,7 +2,7 @@ apiVersion: serving.kserve.io/v1beta1
 kind: InferenceService
 metadata:
   annotations:
-    sidecar.istio.io/inject: "false"
+    sidecar.istio.io/inject: "true"
     prometheus.io/scrape: "true"
     prometheus.io/path: "/metrics"
     prometheus.io/port: "8000"
@@ -11,7 +11,7 @@ metadata:
 spec:
   predictor:
     imagePullSecrets:
-      - name: ${REGISTRY_SECRET_NAME}
+      - name: acr-secret
     containers:
     - env:
       - name: WHISPER_MODEL
@@ -26,7 +26,11 @@ spec:
         value: "26214400"
       - name: ENVIRONMENT
         value: "production"
-      image: ${REGISTRY_IMAGE}
+      - name: XDG_CACHE_HOME
+        value: "/tmp/whisper_cache"
+      - name: MODEL_DOWNLOAD_ROOT
+        value: "/tmp/whisper_cache/models"
+      image: bnracr.azurecr.io/whisper-service:0.0.3-amd64 
       livenessProbe:
         httpGet:
           path: /live
@@ -81,6 +85,10 @@ spec:
         name: temp
       - mountPath: /tmp/whisper_audio
         name: whisper-data
+      - mountPath: /tmp/whisper_cache
+        name: whisper-cache
+      - mountPath: /tmp/whisper
+        name: whisper-temp
     volumes:
     - emptyDir:
         medium: Memory
@@ -90,3 +98,11 @@ spec:
         medium: Memory
         sizeLimit: 2Gi
       name: whisper-data
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 2Gi
+      name: whisper-cache
+    - emptyDir:
+        medium: Memory
+        sizeLimit: 1Gi
+      name: whisper-temp

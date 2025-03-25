@@ -88,12 +88,25 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
 
-# Copy source files correctly
-COPY src/ /app/
+# Create app structure and copy files properly
+COPY src/ /app/src/
 COPY samples/ /app/samples/
 
+# Move serve.py to the correct location
+COPY src/serve.py /app/serve.py
+
+# Add /app to the Python path
+ENV PYTHONPATH=/app
+
+# Create directories for temporary and cache files
 RUN mkdir -p /tmp/whisper_audio && \
-    chmod 777 /tmp/whisper_audio
+    chmod 777 /tmp/whisper_audio && \
+    mkdir -p /tmp/whisper_cache && \
+    chmod 777 /tmp/whisper_cache && \
+    mkdir -p /tmp/whisper_cache/models && \
+    chmod 777 /tmp/whisper_cache/models && \
+    mkdir -p /tmp/whisper/temp && \
+    chmod 777 /tmp/whisper/temp
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -101,8 +114,10 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
     PYTHON_WARNINGS=on \
     OMP_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    MKL_NUM_THREADS=1 \
+    XDG_CACHE_HOME=/tmp/whisper_cache \
+    MODEL_DOWNLOAD_ROOT=/tmp/whisper_cache/models
 
 EXPOSE 8000
 
-CMD ["python3", "-X", "faulthandler", "serve.py"] 
+CMD ["python3", "-X", "faulthandler", "serve.py"]
