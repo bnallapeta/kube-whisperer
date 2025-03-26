@@ -1,5 +1,5 @@
 # Build stage for dependencies
-FROM --platform=$BUILDPLATFORM python:3.11-slim as deps
+FROM python:3.11-slim as deps
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -47,7 +47,7 @@ RUN pip3 install --no-cache-dir \
     psutil==5.9.8
 
 # Runtime stage
-FROM --platform=$TARGETPLATFORM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 as builder
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04 as builder
 
 RUN apt-get update && apt-get install -y \
     python3 \
@@ -69,7 +69,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-FROM --platform=$TARGETPLATFORM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y \
     python3 \

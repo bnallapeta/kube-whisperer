@@ -24,7 +24,6 @@ REGISTRY_SECRET_NAME ?= acr-secret
 
 # Build configuration
 CONTAINER_RUNTIME ?= $(shell which podman 2>/dev/null || which docker 2>/dev/null)
-PLATFORMS ?= linux/amd64,linux/arm64
 CACHE_DIR ?= $(HOME)/.cache/whisper-build
 BUILD_JOBS ?= 2
 
@@ -36,7 +35,7 @@ KUBECONFIG ?= ${KUBECONFIG}
 PORT ?= 8000
 
 # Create cache directories
-$(shell mkdir -p $(CACHE_DIR)/amd64 $(CACHE_DIR)/arm64)
+$(shell mkdir -p $(CACHE_DIR))
 
 # Default target
 all: build
@@ -73,7 +72,7 @@ build:
 push: check-env
 	$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE)
 
-# Multi-arch build commands
+# Build commands
 acr-login:
 	@echo "Checking registry login status..."
 	@if ! $(CONTAINER_RUNTIME) login $(REGISTRY_URL) >/dev/null 2>&1; then \
@@ -82,30 +81,22 @@ acr-login:
 	fi
 
 acr-build-only:
-	@echo "Starting multi-architecture build..."
+	@echo "Starting build..."
 	@echo "Using container runtime: $(CONTAINER_RUNTIME)"
 	@if echo $(CONTAINER_RUNTIME) | grep -q "docker"; then \
-		echo "Using Docker for multi-architecture build..."; \
+		echo "Using Docker for build..."; \
 		$(CONTAINER_RUNTIME) buildx create --name multiarch --use || true; \
 		$(CONTAINER_RUNTIME) buildx build \
-			--platform $(PLATFORMS) \
 			--cache-from type=local,src=$(CACHE_DIR) \
 			--cache-to type=local,dest=$(CACHE_DIR) \
 			--tag $(REGISTRY_IMAGE) \
 			--load .; \
 		$(CONTAINER_RUNTIME) buildx rm multiarch; \
 	else \
-		echo "Using Podman for multi-architecture build..."; \
-		echo "Building AMD64 image..."; \
+		echo "Using Podman for build..."; \
+		echo "Building image..."; \
 		$(CONTAINER_RUNTIME) build \
-			--platform=linux/amd64 \
-			--tag $(REGISTRY_IMAGE)-amd64 \
-			--layers \
-			--force-rm=false . || exit 1; \
-		echo "Building ARM64 image..."; \
-		$(CONTAINER_RUNTIME) build \
-			--platform=linux/arm64 \
-			--tag $(REGISTRY_IMAGE)-arm64 \
+			--tag $(REGISTRY_IMAGE) \
 			--layers \
 			--force-rm=false . || exit 1; \
 	fi
@@ -114,12 +105,7 @@ acr-push:
 	@if echo $(CONTAINER_RUNTIME) | grep -q "docker"; then \
 		$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE); \
 	else \
-		$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE)-amd64 || exit 1; \
-		$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE)-arm64 || exit 1; \
-		$(CONTAINER_RUNTIME) manifest create $(REGISTRY_IMAGE) --amend || exit 1; \
-		$(CONTAINER_RUNTIME) manifest add $(REGISTRY_IMAGE) $(REGISTRY_IMAGE)-amd64 || exit 1; \
-		$(CONTAINER_RUNTIME) manifest add $(REGISTRY_IMAGE) $(REGISTRY_IMAGE)-arm64 || exit 1; \
-		$(CONTAINER_RUNTIME) manifest push $(REGISTRY_IMAGE) || exit 1; \
+		$(CONTAINER_RUNTIME) push $(REGISTRY_IMAGE) || exit 1; \
 	fi
 
 acr-build: check-env acr-build-only acr-push
@@ -172,10 +158,7 @@ clean-local:
 	rm -rf .pytest_cache
 
 acr-clean:
-	@echo "Cleaning up registry images and manifests..."
-	-$(CONTAINER_RUNTIME) manifest rm $(REGISTRY_IMAGE) 2>/dev/null || true
-	-$(CONTAINER_RUNTIME) rmi $(REGISTRY_IMAGE)-amd64 2>/dev/null || true
-	-$(CONTAINER_RUNTIME) rmi $(REGISTRY_IMAGE)-arm64 2>/dev/null || true
+	@echo "Cleaning up registry images..."
 	-$(CONTAINER_RUNTIME) rmi $(REGISTRY_IMAGE) 2>/dev/null || true
 
 cache-clean:
@@ -287,7 +270,7 @@ help:
 	@echo "    make run-local      - Run service locally"
 	@echo ""
 	@echo "  Cloud Development:"
-	@echo "    make acr-build      - Build multi-arch image"
+	@echo "    make acr-build      - Build and push image"
 	@echo "    make cloud-deploy   - Deploy to cloud cluster"
 	@echo ""
 	@echo "  Testing:"
