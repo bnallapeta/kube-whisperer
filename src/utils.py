@@ -9,9 +9,12 @@ import asyncio
 import aiofiles
 import hashlib
 from enum import Enum
+import soundfile as sf
 from src.logging_setup import get_logger, error_tracker
 from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
+import time
+import structlog
 
 # Constants
 TEMP_DIR = "/tmp/whisper_audio"
@@ -193,69 +196,92 @@ class TempFileManager:
             temp_dir: Directory to store temporary files
         """
         self.temp_dir = temp_dir
-        self.logger = get_logger(__name__)
-        
-        # Ensure temp directory exists
-        try:
-            os.makedirs(self.temp_dir, exist_ok=True)
-            self.logger.info("temp_dir_initialized", path=self.temp_dir)
-        except Exception as e:
-            self.logger.error("temp_dir_initialization_failed", error=str(e))
+        os.makedirs(temp_dir, exist_ok=True)
+        self._cleanup_task = None
+        self.logger = structlog.get_logger(__name__)
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        await self.start_cleanup_scheduler()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.stop_cleanup_scheduler()
 
     async def remove_temp_file(self, file_path: str) -> None:
-        """Remove a temporary file.
-        
-        Args:
-            file_path: Path to the file to remove
-        """
+        """Remove a temporary file."""
         try:
             if os.path.exists(file_path):
-                os.remove(file_path)
+                await asyncio.to_thread(os.unlink, file_path)
                 self.logger.info("temp_file_removed", file_path=file_path)
         except Exception as e:
-            self.logger.error("temp_file_removal_failed", error=str(e), file_path=file_path)
+            self.logger.error("temp_file_remove_failed", file_path=file_path, error=str(e))
+            raise
 
-    async def cleanup_temp_files(self, max_age_hours: float = 24.0) -> None:
-        """Clean up old temporary files.
-        
-        Args:
-            max_age_hours: Maximum age of files to keep in hours
-        """
+    async def cleanup_temp_files(self, max_age_hours: int = 24) -> None:
+        """Clean up temporary files older than max_age_hours."""
         try:
-            if not os.path.exists(self.temp_dir):
-                self.logger.warning("temp_dir_not_found", path=self.temp_dir)
-                return
-
-            cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+            current_time = time.time()
+            max_age = max_age_hours * 3600  # Convert hours to seconds
             
-            for filename in os.listdir(self.temp_dir):
-                file_path = os.path.join(self.temp_dir, filename)
-                try:
-                    if os.path.isfile(file_path):
-                        mtime = datetime.fromtimestamp(os.path.getmtime(file_path))
-                        if mtime < cutoff_time:
-                            await self.remove_temp_file(file_path)
-                except Exception as e:
-                    self.logger.error("file_cleanup_failed", error=str(e), file_path=file_path)
-
+            try:
+                # Get list of files in temp directory
+                files = await asyncio.to_thread(os.listdir, self.temp_dir)
+            except FileNotFoundError:
+                self.logger.warning("temp_dir_not_found", temp_dir=self.temp_dir)
+                return
+            
+            # Process files in batches to avoid blocking
+            batch_size = 10
+            for i in range(0, len(files), batch_size):
+                batch = files[i:i + batch_size]
+                tasks = []
+                
+                for filename in batch:
+                    file_path = os.path.join(self.temp_dir, filename)
+                    try:
+                        # Get file stats
+                        stats = await asyncio.to_thread(os.stat, file_path)
+                        file_age = current_time - stats.st_mtime
+                        
+                        if file_age > max_age:
+                            tasks.append(self.remove_temp_file(file_path))
+                    except Exception as e:
+                        self.logger.error("file_age_check_failed", file_path=file_path, error=str(e))
+                
+                # Wait for batch to complete
+                if tasks:
+                    await asyncio.gather(*tasks)
+                    
         except Exception as e:
             self.logger.error("cleanup_failed", error=str(e))
+            raise
 
-    async def start_cleanup_scheduler(self, interval_hours: float = 1.0) -> None:
-        """Start the cleanup scheduler.
-        
-        Args:
-            interval_hours: Interval between cleanup runs in hours
-        """
-        while True:
-            try:
-                await self.cleanup_temp_files()
+    async def start_cleanup_scheduler(self, interval_hours: int = 1) -> None:
+        """Start the cleanup scheduler."""
+        if self._cleanup_task is not None:
+            return
+            
+        async def run_cleanup():
+            while True:
+                try:
+                    await self.cleanup_temp_files()
+                except Exception as e:
+                    self.logger.error("scheduler_error", error=str(e))
                 await asyncio.sleep(interval_hours * 3600)
+        
+        self._cleanup_task = asyncio.create_task(run_cleanup())
+
+    async def stop_cleanup_scheduler(self) -> None:
+        """Stop the cleanup scheduler."""
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
             except asyncio.CancelledError:
-                break
-            except Exception as e:
-                self.logger.error("cleanup_scheduler_error", error=str(e))
-                await asyncio.sleep(60)  # Wait before retrying
+                pass
+            self._cleanup_task = None
 
 def validate_audio_file(file_path: str) -> None:
     """
@@ -311,7 +337,7 @@ def cleanup_temp_file(file_path: str) -> None:
     except Exception as e:
         logger.error(f"Error cleaning up temporary file {file_path}: {str(e)}")
 
-async def get_audio_duration(file_path: str) -> float:
+async def get_audio_duration(file_path: str | Path) -> float:
     """Get the duration of an audio file in seconds.
     
     Args:
@@ -322,13 +348,17 @@ async def get_audio_duration(file_path: str) -> float:
         
     Raises:
         FileNotFoundError: If the file does not exist
-        RuntimeError: If there is an error reading the file
+        LibsndfileError: If there is an error reading the file
     """
     try:
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+            
         with sf.SoundFile(file_path) as f:
             return float(len(f)) / f.samplerate
+            
     except Exception as e:
-        logger = get_logger(__name__)
+        error_tracker.track_error(e, {'file_path': str(file_path)})
         logger.error("Failed to get audio duration")
         raise
 

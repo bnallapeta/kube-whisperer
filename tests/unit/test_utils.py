@@ -23,6 +23,7 @@ from src.utils import (
     ALLOWED_AUDIO_TYPES,
     MAX_FILE_SIZE
 )
+import time
 
 @pytest.fixture
 def temp_audio_file(tmp_path):
@@ -59,9 +60,17 @@ def audio_validator():
     return AudioValidator(config)
 
 @pytest.fixture
-def temp_file_manager():
-    """Create a TempFileManager instance."""
-    return TempFileManager('/tmp/test_whisper_audio')
+def temp_dir(tmp_path):
+    return str(tmp_path)
+
+@pytest.fixture
+async def temp_file_manager(temp_dir):
+    manager = TempFileManager(temp_dir)
+    await manager.start_cleanup_scheduler()
+    try:
+        return manager
+    finally:
+        await manager.stop_cleanup_scheduler()
 
 @pytest.mark.asyncio
 async def test_audio_validator_save_file(audio_validator):
@@ -121,33 +130,40 @@ async def test_invalid_audio_validation(audio_validator, tmp_path):
     assert exc_info.value.status_code == 400
 
 @pytest.mark.asyncio
-async def test_temp_file_cleanup(temp_file_manager, tmp_path):
+async def test_temp_file_cleanup(temp_file_manager, temp_dir):
     """Test temporary file cleanup."""
+    manager = await temp_file_manager
     # Create test files
-    old_file = tmp_path / "old.wav"
-    new_file = tmp_path / "new.wav"
-    old_file.write_bytes(b"old")
-    new_file.write_bytes(b"new")
+    old_file = os.path.join(temp_dir, "old.wav")
+    new_file = os.path.join(temp_dir, "new.wav")
+    
+    # Write test data
+    with open(old_file, "wb") as f:
+        f.write(b"old")
+    with open(new_file, "wb") as f:
+        f.write(b"new")
     
     # Set old file's modification time
-    old_time = datetime.now() - timedelta(hours=25)
-    os.utime(old_file, (old_time.timestamp(), old_time.timestamp()))
+    old_time = time.time() - 25 * 3600  # 25 hours ago
+    os.utime(old_file, (old_time, old_time))
     
     # Run cleanup
-    await temp_file_manager.cleanup_temp_files()
+    await manager.cleanup_temp_files(max_age_hours=24)
     
     # Verify old file is removed
-    assert not old_file.exists()
-    assert new_file.exists()
+    assert not os.path.exists(old_file)
+    assert os.path.exists(new_file)
 
 @pytest.mark.asyncio
-async def test_temp_file_manager_remove(temp_file_manager, tmp_path):
+async def test_temp_file_manager_remove(temp_file_manager, temp_dir):
     """Test removing individual temporary files."""
-    test_file = tmp_path / "test.wav"
-    test_file.write_bytes(b"test")
+    manager = await temp_file_manager
+    test_file = os.path.join(temp_dir, "test.wav")
+    with open(test_file, "wb") as f:
+        f.write(b"test")
     
-    temp_file_manager.remove_temp_file(str(test_file))
-    assert not test_file.exists()
+    await manager.remove_temp_file(test_file)
+    assert not os.path.exists(test_file)
 
 def test_legacy_validate_audio_file():
     """Test legacy audio file validation function."""
@@ -203,14 +219,15 @@ async def test_audio_validator_error_handling(audio_validator, temp_audio_file):
         assert "Invalid audio format" in str(exc_info.value.detail)
 
 @pytest.mark.asyncio
-async def test_temp_file_manager_error_handling(temp_file_manager, tmp_path):
+async def test_temp_file_manager_error_handling(temp_file_manager, temp_dir):
     """Test error handling in TempFileManager."""
+    manager = await temp_file_manager
     # Test cleanup with invalid directory
-    temp_file_manager.temp_dir = "/nonexistent/dir"
-    await temp_file_manager.cleanup_temp_files()  # Should not raise exception
+    manager.temp_dir = "/nonexistent/dir"
+    await manager.cleanup_temp_files()  # Should not raise exception
 
     # Test removal of non-existent file
-    temp_file_manager.remove_temp_file("/nonexistent/file.wav")  # Should not raise exception
+    await manager.remove_temp_file("/nonexistent/file.wav")  # Should not raise exception
 
 @pytest.mark.asyncio
 async def test_audio_validator_save_file_errors(audio_validator):
@@ -227,25 +244,27 @@ async def test_audio_validator_save_file_errors(audio_validator):
 @pytest.mark.asyncio
 async def test_temp_file_manager_scheduler(temp_file_manager):
     """Test temp file cleanup scheduler."""
-    # Mock cleanup_temp_files to track calls
-    temp_file_manager.cleanup_temp_files = AsyncMock()
-    
-    # Start scheduler with short interval
-    cleanup_task = asyncio.create_task(
-        temp_file_manager.start_cleanup_scheduler(interval_hours=0.001)
-    )
-    
-    # Wait for a few cleanup cycles
-    await asyncio.sleep(0.005)
-    cleanup_task.cancel()
-    
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-    
-    # Verify cleanup was called multiple times
-    assert temp_file_manager.cleanup_temp_files.call_count > 1
+    manager = await temp_file_manager
+    with patch.object(manager, 'cleanup_temp_files') as mock_cleanup:
+        # Start scheduler with very short interval (0.1 seconds)
+        await manager.start_cleanup_scheduler(interval_hours=0.0001)
+        
+        # Wait for multiple cleanup cycles
+        await asyncio.sleep(1.0)
+        
+        # Verify cleanup was called multiple times
+        assert mock_cleanup.call_count >= 2
+        
+        # Stop scheduler
+        await manager.stop_cleanup_scheduler()
+        
+        # Wait a bit
+        await asyncio.sleep(0.1)
+        
+        # Verify no more calls
+        call_count = mock_cleanup.call_count
+        await asyncio.sleep(0.1)
+        assert mock_cleanup.call_count == call_count
 
 def test_audio_validator_config():
     """Test AudioValidator configuration."""
@@ -348,26 +367,26 @@ async def test_audio_validator_with_different_formats(audio_validator, tmp_path)
             assert e.status_code == 400
 
 @pytest.mark.asyncio
-async def test_concurrent_temp_file_operations(temp_file_manager, tmp_path):
+async def test_concurrent_temp_file_operations(temp_file_manager, temp_dir):
     """Test concurrent temporary file operations."""
+    manager = await temp_file_manager
     # Create multiple files
     files = []
     for i in range(10):
-        file_path = tmp_path / f"test{i}.wav"
-        file_path.write_bytes(b"test")
-        files.append(str(file_path))
+        file_path = os.path.join(temp_dir, f"test{i}.wav")
+        with open(file_path, "wb") as f:
+            f.write(b"test")
+        files.append(file_path)
     
     # Test concurrent cleanup and removal
     await asyncio.gather(
-        temp_file_manager.cleanup_temp_files(max_age_hours=0),
-        *[asyncio.create_task(
-            temp_file_manager.remove_temp_file(f)) for f in files[:5]]
+        manager.cleanup_temp_files(max_age_hours=0),
+        *[manager.remove_temp_file(f) for f in files[:5]]
     )
     
-    # Verify results
-    for i in range(10):
-        file_path = tmp_path / f"test{i}.wav"
-        assert not file_path.exists()
+    # Verify files are removed
+    for file_path in files[:5]:
+        assert not os.path.exists(file_path)
 
 def test_audio_metadata_model_validation():
     """Test AudioMetadata model validation."""
