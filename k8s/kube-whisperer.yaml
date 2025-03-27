@@ -18,6 +18,8 @@ spec:
         value: base
       - name: COMPUTE_TYPE
         value: float16
+      - name: DEVICE
+        value: "cuda"
       - name: CPU_THREADS
         value: "4"
       - name: NUM_WORKERS
