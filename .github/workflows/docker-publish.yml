@@ -37,6 +37,8 @@ jobs:
       - name: Run tests with coverage
         run: |
           pytest --cov=src --cov-report=term-missing tests/unit/ tests/integration/
+        env:
+          PYTHONPATH: ${{ github.workspace }}
 
   build-and-push:
     needs: test
