@@ -10,6 +10,8 @@ from src.config import (
 )
 import os
 from pydantic import ValidationError
+import asyncio
+from unittest.mock import Mock
 
 def test_whisper_model_enum():
     """Test WhisperModel enum values."""
@@ -45,24 +47,41 @@ def test_transcription_options_validation():
         task="transcribe",
         beam_size=5,
         patience=1.0,
-        temperature=[0.0, 0.5, 1.0],
-        word_timestamps=True
+        temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
     )
     assert config.language == "en"
     assert config.task == "transcribe"
     assert config.beam_size == 5
-    assert config.word_timestamps is True
+    assert config.patience == 1.0
+    assert len(config.temperature) == 6
 
     # Test invalid language code
     with pytest.raises(ValidationError):
-        TranscriptionOptions(language="eng")
+        TranscriptionOptions(language="eng")  # Must be 2 letters
+
+    # Test invalid task
+    with pytest.raises(ValidationError):
+        TranscriptionOptions(task="invalid")  # Must be transcribe or translate
+
+    # Test invalid beam size
+    with pytest.raises(ValidationError):
+        TranscriptionOptions(beam_size=0)  # Must be between 1 and 10
+
+    # Test invalid patience
+    with pytest.raises(ValidationError):
+        TranscriptionOptions(patience=2.5)  # Must be between 0.0 and 2.0
+
+    # Test invalid temperature
+    with pytest.raises(ValidationError):
+        TranscriptionOptions(temperature=[1.5])  # Must be between 0.0 and 1.0
 
     # Test default values
     default_config = TranscriptionOptions()
-    assert default_config.language is None
+    assert default_config.language == "en"  # Now defaults to "en"
     assert default_config.task == "transcribe"
     assert default_config.beam_size == 5
-    assert default_config.word_timestamps is False
+    assert default_config.patience == 1.0
+    assert default_config.temperature == [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
 
 def test_model_config_validation():
     """Test ModelConfig validation."""
@@ -72,17 +91,71 @@ def test_model_config_validation():
         device=DeviceType.CPU,
         compute_type=ComputeType.FLOAT32,
         cpu_threads=4,
-        num_workers=2
+        num_workers=2,
+        download_root="/tmp/whisper_models",
+        language="en"
     )
     assert config.whisper_model == WhisperModel.BASE
     assert config.device == DeviceType.CPU
+    assert config.compute_type == ComputeType.FLOAT32
     assert config.cpu_threads == 4
+    assert config.num_workers == 2
+    assert config.download_root == "/tmp/whisper_models"
+    assert config.language == "en"
+
+    # Test auto device selection
+    auto_config = ModelConfig(device=DeviceType.AUTO)
+    assert auto_config.device == DeviceType.AUTO
+
+    # Test invalid compute type
+    with pytest.raises(ValidationError):
+        ModelConfig(compute_type="invalid_type")
+
+    # Test invalid CPU threads
+    with pytest.raises(ValidationError):
+        ModelConfig(cpu_threads=-1)
+
+    # Test invalid num_workers
+    with pytest.raises(ValidationError):
+        ModelConfig(num_workers=0)
+
+    # Test invalid language
+    with pytest.raises(ValidationError):
+        ModelConfig(language="invalid")
 
     # Test default values
     default_config = ModelConfig()
     assert default_config.whisper_model == WhisperModel.BASE
     assert default_config.device == DeviceType.AUTO
     assert default_config.compute_type == ComputeType.FLOAT32
+    assert default_config.cpu_threads == 4
+    assert default_config.num_workers == 2
+    assert default_config.language == "en"
+
+def test_health_status_values():
+    """Test health status values."""
+    from src.serve import HealthStatus
+
+    # Create a mock model and config
+    mock_model = Mock()
+    mock_config = ModelConfig()
+    health_checker = HealthStatus(mock_model, mock_config)
+
+    # Test model health check
+    result = asyncio.run(health_checker.check_model_health())
+    assert result["status"] in ["healthy", "error"]
+
+    # Test GPU health check
+    result = asyncio.run(health_checker.check_gpu_health())
+    assert result["status"] in ["healthy", "not_available", "error"]
+
+    # Test system health check
+    result = asyncio.run(health_checker.check_system_health())
+    assert result["status"] in ["healthy", "warning", "error"]
+
+    # Test temp directory check
+    result = asyncio.run(health_checker.check_temp_directory())
+    assert result["status"] in ["healthy", "warning", "error"]
 
 def test_service_config_env_vars(monkeypatch):
     """Test ServiceConfig with environment variables."""

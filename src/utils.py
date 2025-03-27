@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field, field_validator
 from pathlib import Path
 import time
 import structlog
+from src.config import TranscriptionOptions
+import psutil
 
 # Constants
 TEMP_DIR = "/tmp/whisper_audio"
@@ -36,13 +38,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 ALLOWED_AUDIO_TYPES = [
-    'audio/wav',
-    'audio/x-wav',
-    'audio/mp3',
-    'audio/mpeg',
-    'audio/ogg',
-    'audio/x-m4a',
-    'audio/aac'
+    'audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/mpeg',
+    'audio/ogg', 'audio/x-m4a', 'audio/aac', 'audio/flac'
 ]
 
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB
@@ -76,12 +73,7 @@ class AudioValidator:
     
     def __init__(self, config: Dict):
         self.max_file_size = config.get('max_file_size', 25 * 1024 * 1024)  # 25MB default
-        self.allowed_types = config.get('allowed_audio_types', [
-            'audio/wav', 'audio/x-wav',
-            'audio/mp3', 'audio/mpeg',
-            'audio/ogg', 'audio/x-m4a',
-            'audio/aac'
-        ])
+        self.allowed_types = config.get('allowed_types', ALLOWED_AUDIO_TYPES)
         self.temp_dir = config.get('temp_dir', '/tmp/whisper_audio')
         self.logger = get_logger(__name__)
 
@@ -386,3 +378,15 @@ def get_mime_type(file_path: str) -> str:
     except Exception as e:
         logger.error("Failed to get MIME type", exc_info=True)
         raise
+
+def process_audio(audio_path: str, options: Optional[TranscriptionOptions] = None) -> dict:
+    """Process audio file with Whisper model."""
+    try:
+        import whisper
+        model = whisper.load_model("base")
+        opts = options.model_dump() if options else {}
+        result = model.transcribe(audio_path, **opts)
+        return result
+    except Exception as e:
+        logger.error(f"Error processing {audio_path}: {str(e)}")
+        raise e

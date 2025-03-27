@@ -38,32 +38,39 @@ class AudioFormat(str, Enum):
     FLAC = "audio/flac"
 
 class TranscriptionOptions(BaseModel):
-    """Configuration for transcription requests."""
-    language: Optional[str] = Field(default=None, description="Language code (ISO 639-1)")
+    """Options for transcription."""
+    language: Optional[str] = Field(default="en", description="Language code (e.g., 'en', 'es')")
     task: str = Field(default="transcribe", description="Task type (transcribe or translate)")
-    beam_size: int = Field(default=5, ge=1, le=10, description="Beam size for decoding")
+    beam_size: int = Field(default=5, ge=1, le=10, description="Beam size for beam search")
     patience: float = Field(default=1.0, ge=0.0, le=2.0, description="Beam search patience factor")
     temperature: List[float] = Field(
         default=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        min_length=1,
+        max_length=10,
         description="Temperature for sampling"
     )
     initial_prompt: Optional[str] = Field(None, description="Optional text to provide as initial prompt")
     word_timestamps: bool = Field(False, description="Whether to include word-level timestamps")
 
-    @field_validator("task")
-    @classmethod
-    def validate_task(cls, v):
-        """Validate task type."""
-        if v not in ["transcribe", "translate"]:
-            raise ValueError("Task must be either 'transcribe' or 'translate'")
-        return v
-
     @field_validator("language")
     @classmethod
     def validate_language(cls, v):
         """Validate language code."""
-        if v and len(v) != 2:
-            raise ValueError("Language code must be a 2-letter ISO 639-1 code")
+        if v is None:
+            return "en"  # Default to English
+        if not isinstance(v, str):
+            raise ValueError("Language code must be a string")
+        if len(v) != 2:
+            raise ValueError("Language code must be a 2-letter ISO code")
+        return v.lower()
+
+    @field_validator("task")
+    @classmethod
+    def validate_task(cls, v):
+        """Validate task type."""
+        valid_tasks = ["transcribe", "translate"]
+        if v not in valid_tasks:
+            raise ValueError(f"Task must be one of: {', '.join(valid_tasks)}")
         return v
 
     @field_validator("temperature")

@@ -1,9 +1,12 @@
 [run]
 source = src
+branch = True
 omit = 
     */tests/*
     */venv/*
     */__init__.py
+    */setup.py
+    */conftest.py
 
 [report]
 exclude_lines =
@@ -21,6 +24,15 @@ exclude_lines =
     @classmethod
     @staticmethod
     def __init__
+    raise NotImplementedError
+    if __name__ == '__main__':
+    pass
 
 [html]
-directory = coverage_html 
+directory = coverage_html
+title = Coverage Report
+
+[paths]
+source =
+    src/
+    */src/ 

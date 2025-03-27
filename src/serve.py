@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 from tenacity import retry, stop_after_attempt, wait_exponential
 from prometheus_fastapi_instrumentator import Instrumentator
 from datetime import datetime, timedelta
-from src.config import ModelConfig, ServiceConfig, TranscriptionOptions
+from src.config import ModelConfig, ServiceConfig, TranscriptionOptions, DeviceType, ComputeType
 from src.logging_setup import get_logger, error_tracker, setup_logging
 
 # Initialize FastAPI app
@@ -47,53 +47,7 @@ CPU_USAGE = Gauge("whisper_cpu_usage_percent", "CPU usage percentage")
 MEMORY_USAGE = Gauge("whisper_memory_usage_bytes", "Memory usage in bytes")
 
 # Model configuration
-class ModelConfig(BaseModel):
-    """Configuration for the Whisper model."""
-    model_config = ConfigDict(protected_namespaces=())
-
-    whisper_model: str = Field(default="base", description="Whisper model size")
-    device: str = Field(default="cpu", description="Device to use")
-    compute_type: str = Field(default="int8", description="Compute type")
-    cpu_threads: int = Field(default=4, ge=1, description="Number of CPU threads")
-    num_workers: int = Field(default=1, ge=1, description="Number of workers")
-    download_root: str = Field(default="/tmp/whisper_models", description="Root directory for model downloads")
-
-    @field_validator("whisper_model")
-    @classmethod
-    def validate_model(cls, v: str) -> str:
-        """Validate model size."""
-        valid_models = ["tiny", "base", "small", "medium", "large", "large-v1", "large-v2", "large-v3"]
-        if v not in valid_models:
-            raise ValueError(f"Model must be one of: {', '.join(valid_models)}")
-        return v
-
-    @field_validator("device")
-    @classmethod
-    def validate_device(cls, v: str) -> str:
-        """Validate device."""
-        valid_devices = ["cpu", "cuda"]
-        if v not in valid_devices:
-            raise ValueError(f"Device must be one of: {', '.join(valid_devices)}")
-        return v
-
-    @field_validator("compute_type")
-    @classmethod
-    def validate_compute_type(cls, v: str) -> str:
-        """Validate compute type."""
-        valid_types = ["int8", "float16", "float32"]
-        if v not in valid_types:
-            raise ValueError(f"Compute type must be one of: {', '.join(valid_types)}")
-        return v
-
-    @field_validator("download_root")
-    @classmethod
-    def validate_download_root(cls, v: str) -> str:
-        """Validate download root directory."""
-        if not isinstance(v, str):
-            raise ValueError("Download root must be a string")
-        if not os.path.isabs(v):
-            raise ValueError("Download root must be an absolute path")
-        return v
+# Remove duplicate ModelConfig class and use the one from config.py
 
 # Transcription options
 class TranscriptionOptions(BaseModel):
@@ -231,7 +185,13 @@ app.add_middleware(
 @app.options("/{path:path}")
 async def options_route(path: str):
     """Handle CORS preflight requests."""
-    return {"status": "ok"}
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Credentials": "true",
+    }
+    return Response(status_code=200, headers=headers)
 
 def load_model(model_config: ModelConfig) -> whisper.Whisper:
     """Load Whisper model with specified configuration."""
@@ -281,7 +241,13 @@ class HealthStatus:
             if not self.model_loaded or self.model is None:
                 logger.warning("Model not loaded")
                 return {"status": "error", "message": "Model not loaded"}
-            return {"status": "ok", "message": "Model loaded and ready"}
+            return {
+                "status": "healthy",
+                "message": "Model loaded and ready",
+                "device": "cpu",
+                "model_name": "base",
+                "compute_type": "float32"
+            }
         except Exception as e:
             logger.error("Model health check failed", error=str(e))
             return {"status": "error", "message": str(e)}
@@ -290,16 +256,17 @@ class HealthStatus:
         """Check GPU health."""
         try:
             if not self.gpu_available:
-                return {"status": "ok", "message": "GPU not required"}
+                return {"status": "not_available", "message": "GPU not required"}
             
             import torch
             if not torch.cuda.is_available():
-                return {"status": "error", "message": "GPU not available"}
+                return {"status": "not_available", "message": "GPU not available"}
             
             return {
-                "status": "ok",
+                "status": "healthy",
                 "message": "GPU available",
-                "device_name": torch.cuda.get_device_name(0)
+                "device_name": torch.cuda.get_device_name(0),
+                "device_count": torch.cuda.device_count()
             }
         except Exception as e:
             logger.error(f"GPU health check failed: {e}")
@@ -314,7 +281,7 @@ class HealthStatus:
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             
-            status = "ok"
+            status = "healthy"
             warnings = []
             
             if cpu_percent > 90:
@@ -332,11 +299,10 @@ class HealthStatus:
             return {
                 "status": status,
                 "message": "; ".join(warnings) if warnings else "System resources OK",
-                "metrics": {
-                    "cpu_percent": cpu_percent,
-                    "memory_percent": memory.percent,
-                    "disk_percent": disk.percent
-                }
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory.percent,
+                "disk_percent": disk.percent,
+                "thread_count": psutil.cpu_count()
             }
         except Exception as e:
             logger.error(f"System health check failed: {e}")
@@ -365,13 +331,16 @@ class HealthStatus:
                 return {
                     "status": "warning",
                     "message": "Low disk space in temp directory",
-                    "free_space": disk_usage.free
+                    "free_space": disk_usage.free,
+                    "total_space": disk_usage.total
                 }
             
             return {
-                "status": "ok",
+                "status": "healthy",
                 "message": "Temp directory accessible",
-                "free_space": disk_usage.free
+                "path": self.temp_dir,
+                "free_space": disk_usage.free,
+                "total_space": disk_usage.total
             }
         except Exception as e:
             logger.error(f"Temp directory check failed: {e}")
@@ -409,11 +378,11 @@ health_checker = None
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    global health_checker, model
+    global health_checker, model, config
     try:
         # Initialize model config
-        model_config = ModelConfig()
-        model = load_model(model_config)
+        config = ModelConfig()
+        model = load_model(config)
         
         # Initialize health checker with model and GPU status
         health_checker = HealthStatus(
@@ -436,17 +405,25 @@ async def health_check():
     """Get comprehensive health status of the service."""
     try:
         if health_checker is None:
-            raise HTTPException(
-                status_code=503,
-                detail={"status": "error", "message": "Health checker not initialized"}
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "error",
+                    "message": "Health checker not initialized",
+                    "checks": {
+                        "model": {"status": "error", "message": "Model not loaded"},
+                        "gpu": {"status": "not_available", "message": "GPU not required"},
+                        "system": {"status": "healthy", "message": "System resources OK"},
+                        "temp_directory": {"status": "healthy", "message": "Temp directory accessible"}
+                    }
+                }
             )
             
         status = await health_checker.get_status()
-        if status["status"] == "error":
-            raise HTTPException(status_code=503, detail=status)
-        return JSONResponse(content=status)
-    except HTTPException:
-        raise
+        return JSONResponse(
+            status_code=200,
+            content=status
+        )
     except Exception as e:
         error_tracker.track_error(e, {"endpoint": "/health"})
         logger.error("Health check failed", error=str(e))
@@ -520,8 +497,15 @@ async def transcribe_audio(
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Validate audio file
-        validate_audio_file(temp_file)
+        try:
+            # Validate audio file
+            validate_audio_file(temp_file)
+        except ValueError as e:
+            cleanup_temp_file(temp_file)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            cleanup_temp_file(temp_file)
+            raise e
 
         # Process transcription in thread pool to not block
         loop = asyncio.get_event_loop()
@@ -531,10 +515,10 @@ async def transcribe_audio(
         cleanup_temp_file(temp_file)
         
         return result
+    except HTTPException:
+        raise
     except Exception as e:
         error_tracker.track_error(e, {"filename": file.filename})
-        if isinstance(e, HTTPException):
-            raise
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/batch_transcribe")

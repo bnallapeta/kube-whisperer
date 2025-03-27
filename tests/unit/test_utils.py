@@ -108,6 +108,25 @@ async def test_audio_validation(audio_validator, temp_audio_file):
         assert metadata.file_type == "audio/wav"
         assert metadata.file_size > 0
 
+        # Test validation with different audio formats
+        for mime_type in ['audio/mp3', 'audio/flac', 'audio/ogg']:
+            with patch('magic.from_file', return_value=mime_type):
+                metadata = await audio_validator.validate_audio_file(
+                    temp_audio_file,
+                    f"test.{mime_type.split('/')[-1]}"
+                )
+                assert metadata.file_type == mime_type
+
+        # Test validation failure with unsupported format
+        with patch('magic.from_file', return_value='audio/midi'), \
+             pytest.raises(HTTPException) as exc_info:
+            await audio_validator.validate_audio_file(
+                temp_audio_file,
+                "test.midi"
+            )
+        assert exc_info.value.status_code == 400
+        assert "Invalid audio format" in str(exc_info.value.detail)
+
 @pytest.mark.asyncio
 async def test_invalid_audio_validation(audio_validator, tmp_path):
     """Test validation of invalid audio files."""
@@ -118,7 +137,8 @@ async def test_invalid_audio_validation(audio_validator, tmp_path):
             "nonexistent.wav"
         )
     assert exc_info.value.status_code == 400
-    
+    assert "File not found" in str(exc_info.value.detail)
+
     # Test oversized file
     large_file = tmp_path / "large.wav"
     large_file.write_bytes(b"x" * (audio_validator.max_file_size + 1))
@@ -128,6 +148,18 @@ async def test_invalid_audio_validation(audio_validator, tmp_path):
             "large.wav"
         )
     assert exc_info.value.status_code == 400
+    assert "exceeds maximum allowed size" in str(exc_info.value.detail)
+
+    # Test corrupted audio file
+    corrupt_file = tmp_path / "corrupt.wav"
+    corrupt_file.write_bytes(b"not a valid wav file")
+    with pytest.raises(HTTPException) as exc_info:
+        await audio_validator.validate_audio_file(
+            str(corrupt_file),
+            "corrupt.wav"
+        )
+    assert exc_info.value.status_code == 400
+    assert "Invalid audio format: text/plain" in str(exc_info.value.detail)
 
 @pytest.mark.asyncio
 async def test_temp_file_cleanup(temp_file_manager, temp_dir):
@@ -150,9 +182,14 @@ async def test_temp_file_cleanup(temp_file_manager, temp_dir):
     # Run cleanup
     await manager.cleanup_temp_files(max_age_hours=24)
     
-    # Verify old file is removed
+    # Verify old file is removed and new file remains
     assert not os.path.exists(old_file)
     assert os.path.exists(new_file)
+
+    # Test cleanup with invalid files
+    invalid_file = os.path.join(temp_dir, "invalid")
+    os.makedirs(invalid_file)  # Create a directory instead of a file
+    await manager.cleanup_temp_files(max_age_hours=24)  # Should not raise exception
 
 @pytest.mark.asyncio
 async def test_temp_file_manager_remove(temp_file_manager, temp_dir):
@@ -271,19 +308,19 @@ def test_audio_validator_config():
     # Test default config
     validator = AudioValidator({})
     assert validator.max_file_size == 25 * 1024 * 1024
-    assert validator.allowed_types == ALLOWED_AUDIO_TYPES
-    assert validator.temp_dir == '/tmp/whisper_audio'
-    
+    assert validator.allowed_types == [
+        'audio/wav', 'audio/x-wav', 'audio/mp3', 'audio/mpeg',
+        'audio/ogg', 'audio/x-m4a', 'audio/aac', 'audio/flac'
+    ]
+
     # Test custom config
     custom_config = {
-        'max_file_size': 1000,
-        'allowed_audio_types': ['audio/wav'],
-        'temp_dir': '/custom/temp'
+        'max_file_size': 10 * 1024 * 1024,
+        'allowed_types': ['audio/wav', 'audio/mp3']
     }
     validator = AudioValidator(custom_config)
-    assert validator.max_file_size == 1000
-    assert validator.allowed_types == ['audio/wav']
-    assert validator.temp_dir == '/custom/temp'
+    assert validator.max_file_size == 10 * 1024 * 1024
+    assert validator.allowed_types == ['audio/wav', 'audio/mp3']
 
 def test_get_mime_type(temp_audio_file, tmp_path):
     """Test MIME type detection."""
@@ -404,4 +441,42 @@ def test_audio_metadata_model_validation():
     assert metadata.duration == 1.5
     
     # Test string representation
-    assert str(metadata) == "AudioMetadata(test.wav, audio/wav, 1024 bytes)" 
+    assert str(metadata) == "AudioMetadata(test.wav, audio/wav, 1024 bytes)"
+
+def test_process_audio(temp_audio_file):
+    """Test audio processing function."""
+    from src.utils import process_audio
+    from src.config import TranscriptionOptions
+
+    with patch("whisper.load_model") as mock_load:
+        mock_model = Mock()
+        mock_model.transcribe.return_value = {
+            "text": "Test transcription",
+            "language": "en",
+            "segments": [{"text": "Test", "start": 0, "end": 1}]
+        }
+        mock_load.return_value = mock_model
+
+        # Test with default options
+        result = process_audio(str(temp_audio_file))
+        assert result["text"] == "Test transcription"
+        assert result["language"] == "en"
+        assert len(result["segments"]) == 1
+
+        # Test with custom options
+        options = TranscriptionOptions(
+            language="es",
+            task="translate",
+            beam_size=5,
+            patience=1.0,
+            temperature=[0.0, 0.2]
+        )
+        result = process_audio(str(temp_audio_file), options)
+        assert result["text"] == "Test transcription"
+        assert result["language"] == "en"
+        assert len(result["segments"]) == 1
+
+        # Test error handling
+        mock_model.transcribe.side_effect = RuntimeError("Test error")
+        with pytest.raises(RuntimeError):
+            process_audio(str(temp_audio_file)) 

@@ -29,12 +29,14 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov
 
-      - name: Create coverage directory
-        run: mkdir -p .build/coverage
+      - name: Create coverage directory and copy config
+        run: |
+          mkdir -p .build/coverage
+          cp .coveragerc .build/coverage/
 
       - name: Run tests with coverage
         run: |
-          pytest --cov=src --cov-report=term-missing tests/
+          pytest --cov=src --cov-report=term-missing tests/unit/ tests/integration/
 
   build-and-push:
     needs: test
@@ -79,4 +81,36 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          platforms: linux/amd64 
+          platforms: linux/amd64
+
+  api-test:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Start the service
+        run: |
+          python src/serve.py &
+          # Wait for the service to start
+          sleep 5
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Run API tests
+        run: |
+          python tests/api/test_transcription.py --url http://localhost:8000 --audio samples/test.wav
+        env:
+          PYTHONPATH: ${{ github.workspace }} 

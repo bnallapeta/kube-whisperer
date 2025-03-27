@@ -163,10 +163,12 @@ async def test_health_check_endpoint(test_client):
     response = test_client.get("/health")
     assert response.status_code == 200
     data = response.json()
-    assert "model" in data
-    assert "gpu" in data
-    assert "system" in data
-    assert "temp_directory" in data
+    assert "status" in data
+    assert "checks" in data
+    assert "model" in data["checks"]
+    assert "gpu" in data["checks"]
+    assert "system" in data["checks"]
+    assert "temp_directory" in data["checks"]
 
 @pytest.mark.asyncio
 async def test_readiness_check_endpoint(test_client):
@@ -186,10 +188,19 @@ async def test_liveness_check_endpoint(test_client):
 
 def test_error_handling(test_client):
     """Test error handling middleware."""
-    with patch("src.serve.load_model", side_effect=RuntimeError("Test error")):
-        response = test_client.post("/transcribe", files={"file": ("test.wav", b"invalid audio")})
+    audio_content = b"mock audio content"
+    files = {"file": ("test.wav", audio_content)}
+
+    with patch("src.serve.validate_audio_file", side_effect=RuntimeError("Test error")):
+        response = test_client.post("/transcribe", files=files)
         assert response.status_code == 500
-        assert "error" in response.json()
+        assert "Test error" in response.json()["detail"]
+
+    # Test invalid file format
+    with patch("src.serve.validate_audio_file", side_effect=ValueError("Invalid audio format")):
+        response = test_client.post("/transcribe", files=files)
+        assert response.status_code == 400
+        assert "Invalid audio format" in response.json()["detail"]
 
 def test_temp_directory_creation():
     """Test temporary directory creation."""
@@ -223,19 +234,33 @@ async def test_transcribe_endpoint(test_client):
     # Create a mock audio file
     audio_content = b"mock audio content"
     files = {"file": ("test.wav", audio_content)}
-    
-    with patch("src.serve.validate_audio_file") as mock_validate:
+
+    with patch("src.serve.validate_audio_file") as mock_validate, \
+         patch("src.serve.process_audio") as mock_process:
+        # Mock validation to return valid audio info
         mock_validate.return_value = {"duration": 10, "sample_rate": 16000}
         
+        # Mock process_audio to return transcription result
+        mock_process.return_value = {
+            "text": "Test transcription",
+            "language": "en",
+            "segments": [{"text": "Test", "start": 0, "end": 1}]
+        }
+
         response = test_client.post(
             "/transcribe",
             files=files,
             data={"language": "en"}
         )
-        
-        assert response.status_code in [200, 202]  # 202 if async processing
+
+        assert response.status_code == 200
         data = response.json()
-        assert "task_id" in data or "text" in data
+        assert "text" in data
+        assert data["text"] == "Test transcription"
+        assert "language" in data
+        assert data["language"] == "en"
+        assert "segments" in data
+        assert len(data["segments"]) == 1
 
 @pytest.mark.asyncio
 async def test_batch_transcribe_endpoint(test_client):
@@ -244,18 +269,37 @@ async def test_batch_transcribe_endpoint(test_client):
         "files": ["file1.wav", "file2.wav"],
         "options": {
             "language": "en",
-            "task": "transcribe"
+            "task": "transcribe",
+            "beam_size": 5,
+            "patience": 1.0,
+            "temperature": [0.0, 0.2, 0.4]
         }
     }
-    
-    with patch("src.serve.validate_audio_file") as mock_validate:
+
+    with patch("src.serve.validate_audio_file") as mock_validate, \
+         patch("src.serve.process_audio") as mock_process:
+        # Mock validation to return valid audio info
         mock_validate.return_value = {"duration": 10, "sample_rate": 16000}
         
+        # Mock process_audio to return transcription result
+        mock_process.return_value = {
+            "text": "Test transcription",
+            "language": "en",
+            "segments": [{"text": "Test", "start": 0, "end": 1}]
+        }
+
         response = test_client.post(
             "/batch_transcribe",
             json=request_data
         )
-        
-        assert response.status_code in [200, 202]
+
+        assert response.status_code == 200
         data = response.json()
-        assert "task_ids" in data or "results" in data 
+        assert "results" in data
+        assert len(data["results"]) == 2
+        for result in data["results"]:
+            assert "file" in result
+            assert "result" in result
+            assert result["result"]["text"] == "Test transcription"
+            assert result["result"]["language"] == "en"
+            assert result["result"]["segments"] == [{"text": "Test", "start": 0, "end": 1}] 

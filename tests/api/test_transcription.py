@@ -12,7 +12,7 @@ def test_health(base_url: str) -> bool:
         response.raise_for_status()
         health_data = response.json()
         print("\nHealth check response:", json.dumps(health_data, indent=2))
-        return health_data["status"] == "healthy"
+        return health_data["status"] == "ok"
     except Exception as e:
         print(f"Health check failed: {str(e)}")
         return False
@@ -48,30 +48,25 @@ def transcribe_audio(
         raise FileNotFoundError(f"Audio file not found: {audio_file}")
         
     files = {
-        'audio_file': open(audio_file, 'rb')
+        'file': (os.path.basename(audio_file), open(audio_file, 'rb'), 'audio/wav')
     }
-    
+    data = {}
+    if options:
+        data.update(options)
+        
     try:
-        if options:
-            response = requests.post(
-                f"{base_url}/infer",
-                files=files,
-                json=options
-            )
-        else:
-            response = requests.post(
-                f"{base_url}/infer",
-                files=files
-            )
+        response = requests.post(
+            f"{base_url}/transcribe",
+            files=files,
+            data=data
+        )
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Error during transcription request: {str(e)}")
-        if hasattr(e.response, 'json'):
+    except Exception as e:
+        print("Error during transcription request:", str(e))
+        if hasattr(e, 'response') and e.response is not None:
             print("Error details:", e.response.json())
         raise
-    finally:
-        files['audio_file'].close()
 
 def batch_transcribe(
     base_url: str,
