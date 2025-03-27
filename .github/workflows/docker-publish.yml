@@ -103,11 +103,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          sudo apt-get install -y build-essential
+          sudo apt-get install -y portaudio19-dev
+          sudo apt-get install -y python3-dev
+          sudo apt-get install -y libsndfile1
+
       - name: Start the service
         run: |
           python src/serve.py &
           # Wait for the service to start
-          sleep 5
+          sleep 10
+          # Check if service is healthy
+          curl -s http://localhost:8000/health || exit 1
         env:
           PYTHONPATH: ${{ github.workspace }}
 
