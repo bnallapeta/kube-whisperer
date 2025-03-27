@@ -30,7 +30,7 @@ spec:
         value: "/tmp/whisper_cache"
       - name: MODEL_DOWNLOAD_ROOT
         value: "/tmp/whisper_cache/models"
-      image: bnracr.azurecr.io/kube-whisperer:0.0.1
+      image: ghcr.io/bnallapeta/kube-whisperer:0.0.1 
       livenessProbe:
         httpGet:
           path: /live
