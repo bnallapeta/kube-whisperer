@@ -6,6 +6,10 @@ metadata:
     prometheus.io/scrape: "true"
     prometheus.io/path: "/metrics"
     prometheus.io/port: "8000"
+    autoscaling.knative.dev/class: "kpa.autoscaling.knative.dev"
+    autoscaling.knative.dev/target: "1"
+    autoscaling.knative.dev/minScale: "1"
+    autoscaling.knative.dev/maxScale: "2"
   name: kube-whisperer
   namespace: default
 spec:
@@ -15,9 +19,9 @@ spec:
     containers:
     - env:
       - name: WHISPER_MODEL
-        value: base
+        value: tiny
       - name: COMPUTE_TYPE
-        value: float16
+        value: float32
       - name: DEVICE
         value: "cuda"
       - name: CPU_THREADS
@@ -66,14 +70,12 @@ spec:
         name: http1
         protocol: TCP
       resources:
-        limits:
-          cpu: "4"
-          memory: 8Gi
-          nvidia.com/gpu: "1"
         requests:
+          cpu: "500m"
+          memory: "1Gi"
+        limits:
           cpu: "1"
-          memory: 4Gi
-          nvidia.com/gpu: "1"
+          memory: "4Gi"
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
